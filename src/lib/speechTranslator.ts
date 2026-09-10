@@ -12,7 +12,7 @@ export interface TranslationPayload {
 export interface TranslatorCallbacks {
   onInterim: (payload: TranslationPayload) => void;
   onFinal: (payload: TranslationPayload) => void;
-  onDisconnected: (reason: string) => void;
+  onDisconnected: (reason: string, fatal: boolean) => void;
   onTokenError: (reason: string) => void;
 }
 
@@ -55,14 +55,25 @@ export class AzureSpeechTranslator {
     recognizer.canceled = (_sender, event) => {
       if (this.stopping) return;
       const details = SpeechSDK.CancellationDetails.fromResult(event.result);
-      const reason =
-        event.reason === SpeechSDK.CancellationReason.Error
-          ? `翻译连接中断（${details.ErrorCode}）`
-          : "翻译连接已取消";
-      this.reportDisconnect(reason);
+      const fatal = [
+        SpeechSDK.CancellationErrorCode.AuthenticationFailure,
+        SpeechSDK.CancellationErrorCode.BadRequestParameters,
+        SpeechSDK.CancellationErrorCode.Forbidden,
+      ].includes(details.ErrorCode);
+      let reason = "翻译连接已取消";
+      if (details.ErrorCode === SpeechSDK.CancellationErrorCode.AuthenticationFailure) {
+        reason = "Azure Speech 身份验证失败，翻译已停止";
+      } else if (details.ErrorCode === SpeechSDK.CancellationErrorCode.BadRequestParameters) {
+        reason = "Azure Speech 语言或资源配置无效，翻译已停止";
+      } else if (details.ErrorCode === SpeechSDK.CancellationErrorCode.Forbidden) {
+        reason = "Azure Speech F0 配额可能已耗尽或访问被拒绝，翻译已停止";
+      } else if (event.reason === SpeechSDK.CancellationReason.Error) {
+        reason = `翻译连接中断（错误代码 ${details.ErrorCode}）`;
+      }
+      this.reportDisconnect(reason, fatal);
     };
     recognizer.sessionStopped = () => {
-      if (!this.stopping) this.reportDisconnect("翻译会话意外停止");
+      if (!this.stopping) this.reportDisconnect("翻译会话意外停止", false);
     };
 
     await new Promise<void>((resolve, reject) => {
@@ -120,9 +131,9 @@ export class AzureSpeechTranslator {
     }, delay);
   }
 
-  private reportDisconnect(reason: string) {
+  private reportDisconnect(reason: string, fatal: boolean) {
     if (this.disconnectReported) return;
     this.disconnectReported = true;
-    this.callbacks.onDisconnected(reason);
+    this.callbacks.onDisconnected(reason, fatal);
   }
 }

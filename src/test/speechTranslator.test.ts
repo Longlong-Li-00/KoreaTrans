@@ -17,6 +17,7 @@ interface TestResult {
   duration: number;
   resultId: string;
   reason: number;
+  cancellationCode?: number;
 }
 
 function recordRecognizer(recognizer: NonNullable<typeof latestRecognizer>) {
@@ -58,7 +59,12 @@ vi.mock("microsoft-cognitiveservices-speech-sdk", () => {
     TranslationRecognizer,
     ResultReason: { TranslatedSpeech: 1 },
     CancellationReason: { Error: 1 },
-    CancellationDetails: { fromResult: () => ({ ErrorCode: 7 }) },
+    CancellationErrorCode: {
+      AuthenticationFailure: 1,
+      BadRequestParameters: 2,
+      Forbidden: 8,
+    },
+    CancellationDetails: { fromResult: (result: TestResult) => ({ ErrorCode: result.cancellationCode ?? 7 }) },
   };
 });
 
@@ -106,7 +112,39 @@ describe("AzureSpeechTranslator", () => {
     latestRecognizer!.canceled?.(null, { result, reason: 1 });
     latestRecognizer!.sessionStopped?.();
     expect(callbacks.onDisconnected).toHaveBeenCalledTimes(1);
-    expect(callbacks.onDisconnected).toHaveBeenCalledWith("翻译连接中断（7）");
+    expect(callbacks.onDisconnected).toHaveBeenCalledWith("翻译连接中断（错误代码 7）", false);
+    await translator.stop();
+  });
+
+  it("配额拒绝被标记为不可自动重连错误", async () => {
+    const now = Date.now();
+    tokenMock.mockResolvedValueOnce({
+      token: "token-1",
+      region: "koreacentral",
+      expiresAt: now + 600_000,
+    });
+    const callbacks = {
+      onInterim: vi.fn(),
+      onFinal: vi.fn(),
+      onDisconnected: vi.fn(),
+      onTokenError: vi.fn(),
+    };
+    const translator = new AzureSpeechTranslator(callbacks);
+    await translator.start();
+    const result: TestResult = {
+      text: "",
+      translations: new Map(),
+      offset: 0,
+      duration: 0,
+      resultId: "quota",
+      reason: 1,
+      cancellationCode: 8,
+    };
+    latestRecognizer!.canceled?.(null, { result, reason: 1 });
+    expect(callbacks.onDisconnected).toHaveBeenCalledWith(
+      "Azure Speech F0 配额可能已耗尽或访问被拒绝，翻译已停止",
+      true,
+    );
     await translator.stop();
   });
 

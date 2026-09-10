@@ -135,20 +135,27 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
       if (reconnectTimerRef.current !== null) return;
 
       const attempt = reconnectAttemptRef.current;
-      if (attempt >= RECONNECT_DELAYS_MS.length) {
-        setStatus("error");
-        setRuntimeMessage("连续重连失败。请检查网络、Azure F0 配额和麦克风权限后手动重试。");
-        return;
-      }
-
-      const delay = RECONNECT_DELAYS_MS[attempt];
-      reconnectAttemptRef.current += 1;
+      const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)];
+      reconnectAttemptRef.current = Math.min(attempt + 1, RECONNECT_DELAYS_MS.length - 1);
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
         void connectRef.current(true);
       }, delay);
     },
     [openGap, stopTranslator],
+  );
+
+  const stopForFatalSpeechError = useCallback(
+    (reason: string) => {
+      activeRef.current = false;
+      clearReconnectTimer();
+      openGap(reason);
+      setStatus("error");
+      setRuntimeMessage(reason);
+      void stopTranslator();
+      void releaseWakeLock();
+    },
+    [clearReconnectTimer, openGap, releaseWakeLock, stopTranslator],
   );
 
   const toSegment = useCallback(
@@ -190,7 +197,8 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
           if (generation !== connectGenerationRef.current) return;
           dispatch({ type: "finalize", segment: toSegment(payload, connectionBaseMs, "final") });
         },
-        onDisconnected: (reason) => scheduleReconnect(reason),
+        onDisconnected: (reason, fatal) =>
+          fatal ? stopForFatalSpeechError(reason) : scheduleReconnect(reason),
         onTokenError: (reason) => scheduleReconnect(reason),
       });
       translatorRef.current = translator;
@@ -235,6 +243,7 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
       requestWakeLock,
       scheduleReconnect,
       stopTranslator,
+      stopForFatalSpeechError,
       toSegment,
     ],
   );
