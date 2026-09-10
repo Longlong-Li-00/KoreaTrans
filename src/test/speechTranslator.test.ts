@@ -9,6 +9,7 @@ let latestRecognizer: {
   sessionStopped?: () => void;
   authorizationToken?: string;
 } | null = null;
+let configProperties: Array<[string, string]> = [];
 
 interface TestResult {
   text: string;
@@ -33,6 +34,9 @@ vi.mock("microsoft-cognitiveservices-speech-sdk", () => {
       return new SpeechTranslationConfig();
     }
     addTargetLanguage() {}
+    setProperty(name: string, value: string) {
+      configProperties.push([name, value]);
+    }
   }
 
   class TranslationRecognizer {
@@ -57,6 +61,10 @@ vi.mock("microsoft-cognitiveservices-speech-sdk", () => {
     SpeechTranslationConfig,
     AudioConfig: { fromDefaultMicrophoneInput: () => ({}) },
     TranslationRecognizer,
+    PropertyId: {
+      Speech_SegmentationStrategy: "segmentation-strategy",
+      SpeechServiceResponse_TranslationRequestStablePartialResult: "stable-translation-partial",
+    },
     ResultReason: { TranslatedSpeech: 1 },
     CancellationReason: { Error: 1 },
     CancellationErrorCode: {
@@ -72,6 +80,7 @@ const tokenMock = vi.mocked(fetchSpeechToken);
 
 beforeEach(() => {
   latestRecognizer = null;
+  configProperties = [];
   tokenMock.mockReset();
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-10T01:00:00.000Z"));
@@ -91,6 +100,10 @@ describe("AzureSpeechTranslator", () => {
     };
     const translator = new AzureSpeechTranslator(callbacks);
     await translator.start();
+    expect(configProperties).toEqual([
+      ["segmentation-strategy", "Semantic"],
+      ["stable-translation-partial", "true"],
+    ]);
 
     const result: TestResult = {
       text: "실험을 시작합니다.",
@@ -190,6 +203,58 @@ describe("AzureSpeechTranslator", () => {
     const secondId = callbacks.onFinal.mock.calls[1][0].id;
     expect(firstId).not.toBe(secondId);
     expect(callbacks.onFinal.mock.calls[2][0].id).toBe(secondId);
+
+    await translator.stop();
+  });
+
+  it("限制临时字幕刷新频率并在最终结果到达时取消过期更新", async () => {
+    tokenMock.mockResolvedValueOnce({
+      token: "token-1",
+      region: "eastasia",
+      expiresAt: Date.now() + 600_000,
+    });
+    const callbacks = {
+      onInterim: vi.fn(),
+      onFinal: vi.fn(),
+      onDisconnected: vi.fn(),
+      onTokenError: vi.fn(),
+    };
+    const translator = new AzureSpeechTranslator(callbacks);
+    await translator.start();
+
+    const result = (text: string, translation: string, offset: number): TestResult => ({
+      text,
+      translations: new Map([["zh-Hans", translation]]),
+      offset,
+      duration: 10_000_000,
+      resultId: "",
+      reason: 1,
+    });
+    const first = result("첫", "第", 10_000_000);
+    const second = result("첫 번째", "第一", 10_500_000);
+    const latest = result("첫 번째 문장", "第一句话", 11_000_000);
+
+    latestRecognizer!.recognizing?.(null, { result: first });
+    latestRecognizer!.recognizing?.(null, { result: second });
+    latestRecognizer!.recognizing?.(null, { result: latest });
+    expect(callbacks.onInterim).toHaveBeenCalledTimes(1);
+    expect(callbacks.onInterim).toHaveBeenLastCalledWith(
+      expect.objectContaining({ translationZhHans: "第" }),
+    );
+
+    await vi.advanceTimersByTimeAsync(649);
+    expect(callbacks.onInterim).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(callbacks.onInterim).toHaveBeenCalledTimes(2);
+    expect(callbacks.onInterim).toHaveBeenLastCalledWith(
+      expect.objectContaining({ translationZhHans: "第一句话" }),
+    );
+
+    latestRecognizer!.recognizing?.(null, { result: second });
+    latestRecognizer!.recognized?.(null, { result: latest });
+    await vi.advanceTimersByTimeAsync(650);
+    expect(callbacks.onInterim).toHaveBeenCalledTimes(2);
+    expect(callbacks.onFinal).toHaveBeenCalledTimes(1);
 
     await translator.stop();
   });

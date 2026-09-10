@@ -18,6 +18,7 @@ export interface TranslatorCallbacks {
 
 const TICKS_PER_MILLISECOND = 10_000;
 const TOKEN_REFRESH_MARGIN_MS = 2 * 60 * 1000;
+const INTERIM_RENDER_INTERVAL_MS = 650;
 
 export class AzureSpeechTranslator {
   private recognizer: import("microsoft-cognitiveservices-speech-sdk").TranslationRecognizer | null = null;
@@ -27,6 +28,9 @@ export class AzureSpeechTranslator {
   private recognitionSessionId = "";
   private nextFinalId = 0;
   private readonly finalIdsBySignature = new Map<string, string>();
+  private pendingInterim: TranslationPayload | null = null;
+  private interimTimer: number | null = null;
+  private lastInterimEmittedAt = 0;
 
   constructor(private readonly callbacks: TranslatorCallbacks) {}
 
@@ -36,6 +40,8 @@ export class AzureSpeechTranslator {
     this.recognitionSessionId = crypto.randomUUID();
     this.nextFinalId = 0;
     this.finalIdsBySignature.clear();
+    this.clearPendingInterim();
+    this.lastInterimEmittedAt = 0;
     const SpeechSDK = await import("microsoft-cognitiveservices-speech-sdk");
     const credential = await fetchSpeechToken();
     const config = SpeechSDK.SpeechTranslationConfig.fromAuthorizationToken(
@@ -44,6 +50,11 @@ export class AzureSpeechTranslator {
     );
     config.speechRecognitionLanguage = "ko-KR";
     config.addTargetLanguage("zh-Hans");
+    config.setProperty(SpeechSDK.PropertyId.Speech_SegmentationStrategy, "Semantic");
+    config.setProperty(
+      SpeechSDK.PropertyId.SpeechServiceResponse_TranslationRequestStablePartialResult,
+      "true",
+    );
 
     const audio = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
     const recognizer = new SpeechSDK.TranslationRecognizer(config, audio);
@@ -51,9 +62,11 @@ export class AzureSpeechTranslator {
 
     recognizer.recognizing = (_sender, event) => {
       const payload = this.toPayload(event.result, "provisional");
-      if (payload) this.callbacks.onInterim(payload);
+      if (payload) this.queueInterim(payload);
     };
     recognizer.recognized = (_sender, event) => {
+      if (this.stopping) return;
+      this.clearPendingInterim();
       if (event.result.reason !== SpeechSDK.ResultReason.TranslatedSpeech) return;
       const payload = this.toPayload(event.result, this.finalIdFor(event.result));
       if (payload) this.callbacks.onFinal(payload);
@@ -90,6 +103,7 @@ export class AzureSpeechTranslator {
 
   async stop() {
     this.stopping = true;
+    this.clearPendingInterim();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
@@ -102,6 +116,38 @@ export class AzureSpeechTranslator {
       recognizer.stopContinuousRecognitionAsync(resolve, () => resolve());
     });
     recognizer.close();
+  }
+
+  private queueInterim(payload: TranslationPayload) {
+    if (this.stopping) return;
+    this.pendingInterim = payload;
+    const elapsed = Date.now() - this.lastInterimEmittedAt;
+    if (this.lastInterimEmittedAt === 0 || elapsed >= INTERIM_RENDER_INTERVAL_MS) {
+      this.flushPendingInterim();
+      return;
+    }
+    if (this.interimTimer !== null) return;
+
+    this.interimTimer = window.setTimeout(() => {
+      this.interimTimer = null;
+      this.flushPendingInterim();
+    }, INTERIM_RENDER_INTERVAL_MS - elapsed);
+  }
+
+  private flushPendingInterim() {
+    const payload = this.pendingInterim;
+    this.pendingInterim = null;
+    if (!payload || this.stopping) return;
+    this.lastInterimEmittedAt = Date.now();
+    this.callbacks.onInterim(payload);
+  }
+
+  private clearPendingInterim() {
+    this.pendingInterim = null;
+    if (this.interimTimer !== null) {
+      window.clearTimeout(this.interimTimer);
+      this.interimTimer = null;
+    }
   }
 
   private toPayload(
@@ -159,6 +205,7 @@ export class AzureSpeechTranslator {
   private reportDisconnect(reason: string, fatal: boolean) {
     if (this.disconnectReported) return;
     this.disconnectReported = true;
+    this.clearPendingInterim();
     this.callbacks.onDisconnected(reason, fatal);
   }
 }

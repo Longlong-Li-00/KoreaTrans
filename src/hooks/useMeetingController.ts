@@ -213,7 +213,7 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
         reconnectAttemptRef.current = 0;
         closeGap();
         setStatus("listening");
-        setRuntimeMessage("正在收听韩语；灰色字幕仍可能修订。");
+        setRuntimeMessage("正在收听韩语；临时字幕已降频，最终字幕按语义自动冻结。");
         void requestWakeLock();
       } catch (error) {
         if (!activeRef.current || generation !== connectGenerationRef.current) return;
