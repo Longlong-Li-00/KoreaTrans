@@ -3,12 +3,11 @@
   "Values": {
     "AzureWebJobsStorage": "",
     "FUNCTIONS_WORKER_RUNTIME": "node",
-    "AZURE_SPEECH_KEY": "replace-with-your-korea-central-f0-key",
-    "AZURE_SPEECH_REGION": "koreacentral",
+    "AZURE_SPEECH_KEY": "replace-with-your-east-asia-f0-key",
+    "AZURE_SPEECH_REGION": "eastasia",
     "APP_PASSWORD_SCRYPT_HASH": "run-npm-run-auth-hash-at-project-root",
     "SESSION_SIGNING_SECRET": "replace-with-at-least-32-random-characters",
     "APP_ALLOWED_ORIGINS": "http://localhost:4280,http://localhost:5173",
     "APP_COOKIE_SECURE": "false"
   }
 }
-

@@ -52,18 +52,18 @@ npm run dev
 
 ## Azure 与 GitHub 部署
 
-1. 在 Azure 创建 Speech F0 资源，区域固定为 `koreacentral`。
+1. 在 Azure 创建 Speech F0 资源。本项目当前资源位于 `eastasia`；客户端始终使用令牌接口返回的实际区域。
 2. 创建 Azure Static Web Apps Free 资源，连接本仓库的 `main` 分支；应用位置 `/`、API 位置 `api`、输出位置 `dist`。
 3. 在 Static Web App 的应用设置中配置：
 
    - `AZURE_SPEECH_KEY`
-   - `AZURE_SPEECH_REGION=koreacentral`
+   - `AZURE_SPEECH_REGION=eastasia`
    - `APP_PASSWORD_SCRYPT_HASH`
    - `SESSION_SIGNING_SECRET`
    - `APP_ALLOWED_ORIGINS=https://<你的-static-web-app-域名>`
    - `APP_COOKIE_SECURE=true`
 
-4. 在 GitHub Actions secret 中配置 `AZURE_STATIC_WEB_APPS_API_TOKEN`。仓库提供的工作流会在每次推送 `main` 前执行 lint、前端/API 测试和生产构建。
+4. Azure 创建流程会自动配置与资源绑定的 GitHub Actions secret。仓库提供的工作流会在每次推送 `main` 时先执行 lint、前端/API 测试和生产构建，再部署到生产环境。
 
 任何密钥或口令都不得写入源代码、GitHub 普通变量、前端 `.env` 或截图。若 Static Web Apps 的最终域名发生变化，必须同步更新 `APP_ALLOWED_ORIGINS`。
 
