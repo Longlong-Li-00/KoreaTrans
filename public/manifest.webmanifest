@@ -1,0 +1,20 @@
+{
+  "name": "韩语实时中文字幕",
+  "short_name": "韩语同译",
+  "description": "线下韩语会议的实时简体中文字幕工具",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#071b2d",
+  "theme_color": "#071b2d",
+  "lang": "zh-Hans",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

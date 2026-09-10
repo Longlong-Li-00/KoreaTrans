@@ -1,0 +1,46 @@
+{
+  "name": "korea-live-translate",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite",
+    "dev:api": "npm --prefix api run dev",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "test:frontend": "vitest run",
+    "test:api": "npm --prefix api test",
+    "test": "npm run test:frontend && npm run test:api",
+    "check": "npm run lint && npm run test && npm run build",
+    "auth:hash": "node scripts/generate-password-hash.mjs"
+  },
+  "dependencies": {
+    "microsoft-cognitiveservices-speech-sdk": "1.51.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@types/node": "22.20.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "eslint": "10.10.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.6",
+    "globals": "17.12.0",
+    "jsdom": "29.1.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0",
+    "fake-indexeddb": "6.2.5",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
+  }
+}

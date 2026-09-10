@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.vite/
+.swa/
+.DS_Store
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+api/local.settings.json
+api/node_modules/
