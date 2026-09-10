@@ -24,12 +24,18 @@ export class AzureSpeechTranslator {
   private refreshTimer: number | null = null;
   private stopping = false;
   private disconnectReported = false;
+  private recognitionSessionId = "";
+  private nextFinalId = 0;
+  private readonly finalIdsBySignature = new Map<string, string>();
 
   constructor(private readonly callbacks: TranslatorCallbacks) {}
 
   async start() {
     this.stopping = false;
     this.disconnectReported = false;
+    this.recognitionSessionId = crypto.randomUUID();
+    this.nextFinalId = 0;
+    this.finalIdsBySignature.clear();
     const SpeechSDK = await import("microsoft-cognitiveservices-speech-sdk");
     const credential = await fetchSpeechToken();
     const config = SpeechSDK.SpeechTranslationConfig.fromAuthorizationToken(
@@ -49,7 +55,7 @@ export class AzureSpeechTranslator {
     };
     recognizer.recognized = (_sender, event) => {
       if (event.result.reason !== SpeechSDK.ResultReason.TranslatedSpeech) return;
-      const payload = this.toPayload(event.result, event.result.resultId);
+      const payload = this.toPayload(event.result, this.finalIdFor(event.result));
       if (payload) this.callbacks.onFinal(payload);
     };
     recognizer.canceled = (_sender, event) => {
@@ -100,7 +106,7 @@ export class AzureSpeechTranslator {
 
   private toPayload(
     result: import("microsoft-cognitiveservices-speech-sdk").TranslationRecognitionResult,
-    fallbackId: string,
+    id: string,
   ) {
     const sourceKo = result.text?.trim() ?? "";
     const translationZhHans = result.translations.get("zh-Hans")?.trim() ?? "";
@@ -108,12 +114,31 @@ export class AzureSpeechTranslator {
     const startMs = clampMilliseconds(Number(result.offset) / TICKS_PER_MILLISECOND);
     const durationMs = clampMilliseconds(Number(result.duration) / TICKS_PER_MILLISECOND);
     return {
-      id: result.resultId || fallbackId,
+      id,
       sourceKo,
       translationZhHans,
       startMs,
       endMs: startMs + durationMs,
     };
+  }
+
+  private finalIdFor(
+    result: import("microsoft-cognitiveservices-speech-sdk").TranslationRecognitionResult,
+  ) {
+    const signature = JSON.stringify([
+      result.resultId ?? "",
+      String(result.offset ?? ""),
+      String(result.duration ?? ""),
+      result.text?.trim() ?? "",
+      result.translations.get("zh-Hans")?.trim() ?? "",
+    ]);
+    const existing = this.finalIdsBySignature.get(signature);
+    if (existing) return existing;
+
+    this.nextFinalId += 1;
+    const id = `speech-${this.recognitionSessionId}-${this.nextFinalId}`;
+    this.finalIdsBySignature.set(signature, id);
+    return id;
   }
 
   private scheduleTokenRefresh(expiresAt: number) {

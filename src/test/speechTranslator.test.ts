@@ -103,7 +103,9 @@ describe("AzureSpeechTranslator", () => {
     latestRecognizer!.recognizing?.(null, { result });
     latestRecognizer!.recognized?.(null, { result });
     expect(callbacks.onInterim).toHaveBeenCalledWith(expect.objectContaining({ startMs: 1_000 }));
-    expect(callbacks.onFinal).toHaveBeenCalledWith(expect.objectContaining({ id: "result-1", endMs: 3_000 }));
+    expect(callbacks.onFinal).toHaveBeenCalledWith(
+      expect.objectContaining({ id: expect.stringMatching(/^speech-.+-1$/), endMs: 3_000 }),
+    );
 
     await vi.advanceTimersByTimeAsync(480_000);
     expect(tokenMock).toHaveBeenCalledTimes(2);
@@ -145,6 +147,50 @@ describe("AzureSpeechTranslator", () => {
       "Azure Speech F0 配额可能已耗尽或访问被拒绝，翻译已停止",
       true,
     );
+    await translator.stop();
+  });
+
+  it("上游 resultId 缺失或重复时仍为不同语句生成不同的最终字幕 ID", async () => {
+    tokenMock.mockResolvedValueOnce({
+      token: "token-1",
+      region: "eastasia",
+      expiresAt: Date.now() + 600_000,
+    });
+    const callbacks = {
+      onInterim: vi.fn(),
+      onFinal: vi.fn(),
+      onDisconnected: vi.fn(),
+      onTokenError: vi.fn(),
+    };
+    const translator = new AzureSpeechTranslator(callbacks);
+    await translator.start();
+
+    const first: TestResult = {
+      text: "첫 번째 문장입니다.",
+      translations: new Map([["zh-Hans", "这是第一句话。"]]),
+      offset: 10_000_000,
+      duration: 20_000_000,
+      resultId: "",
+      reason: 1,
+    };
+    const second: TestResult = {
+      text: "두 번째 문장입니다.",
+      translations: new Map([["zh-Hans", "这是第二句话。"]]),
+      offset: 40_000_000,
+      duration: 20_000_000,
+      resultId: "",
+      reason: 1,
+    };
+
+    latestRecognizer!.recognized?.(null, { result: first });
+    latestRecognizer!.recognized?.(null, { result: second });
+    latestRecognizer!.recognized?.(null, { result: second });
+
+    const firstId = callbacks.onFinal.mock.calls[0][0].id;
+    const secondId = callbacks.onFinal.mock.calls[1][0].id;
+    expect(firstId).not.toBe(secondId);
+    expect(callbacks.onFinal.mock.calls[2][0].id).toBe(secondId);
+
     await translator.stop();
   });
 
