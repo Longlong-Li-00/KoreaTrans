@@ -1,10 +1,12 @@
-import type { CaptionSegment, CaptionState, GapMarker, TimelineItem } from "../types";
+import type { CaptionSegment, CaptionState, GapMarker, PauseMarker, TimelineItem } from "../types";
 
 export type CaptionAction =
   | { type: "set_interim"; segment: CaptionSegment }
   | { type: "finalize"; segment: CaptionSegment }
   | { type: "open_gap"; gap: GapMarker }
   | { type: "close_gap"; id: string; endMs: number }
+  | { type: "open_pause"; pause: PauseMarker }
+  | { type: "close_pause"; id: string; endMs: number }
   | { type: "hydrate"; items: TimelineItem[] }
   | { type: "clear" };
 
@@ -52,12 +54,26 @@ export function captionReducer(state: CaptionState, action: CaptionAction): Capt
         ),
       };
 
+    case "open_pause":
+      if (state.items.some((item) => item.kind === "pause" && item.endMs === null)) return state;
+      return { ...state, provisional: null, items: chronological([...state.items, action.pause]) };
+
+    case "close_pause":
+      return {
+        ...state,
+        items: state.items.map((item) =>
+          item.kind === "pause" && item.id === action.id && item.endMs === null
+            ? { ...item, endMs: Math.max(item.startMs, action.endMs) }
+            : item,
+        ),
+      };
+
     case "hydrate":
       return {
         items: chronological(
           action.items.filter(
             (item): item is TimelineItem =>
-              item.kind === "gap" || (item.kind === "caption" && item.status === "final"),
+              item.kind === "gap" || item.kind === "pause" || (item.kind === "caption" && item.status === "final"),
           ),
         ),
         provisional: null,

@@ -19,6 +19,7 @@ const STATUS_LABELS: Record<SessionStatus, string> = {
   requesting_permission: "等待麦克风",
   connecting: "正在连接",
   listening: "正在收听",
+  paused: "已主动暂停",
   reconnecting: "连接中断",
   stopped: "已停止",
   error: "需要处理",
@@ -118,6 +119,18 @@ function TimelineEntry({ item }: { item: TimelineItem }) {
           {formatElapsed(item.startMs)} — {item.endMs === null ? "尚未恢复" : formatElapsed(item.endMs)}
         </strong>
         <p>{item.reason}</p>
+      </article>
+    );
+  }
+
+  if (item.kind === "pause") {
+    return (
+      <article className="pause-card" aria-label="主动暂停区间">
+        <span>主动暂停</span>
+        <strong>
+          {formatElapsed(item.startMs)} — {item.endMs === null ? "尚未继续" : formatElapsed(item.endMs)}
+        </strong>
+        <p>此期间未使用麦克风或翻译额度，仍计入同一场会议的时间线。</p>
       </article>
     );
   }
@@ -348,6 +361,18 @@ function App() {
     if (confirmed) await meetingController.clearCurrentDraft();
   }
 
+  async function discardSavedDraft(id: string) {
+    const confirmed = window.confirm("确认删除这份本地会议草稿？此操作不可撤销。");
+    if (confirmed) await meetingController.discardRecoverableDraft(id);
+  }
+
+  async function startAnotherMeeting() {
+    const confirmed = window.confirm(
+      "上一场会议会保留在本机草稿中。开始前，请再次确认本场所有参会者均已同意云端语音翻译。",
+    );
+    if (confirmed) await meetingController.beginMeeting();
+  }
+
   if (authState !== "signed_in") {
     return (
       <LoginScreen
@@ -365,7 +390,7 @@ function App() {
   const {
     captions,
     meeting,
-    recoverableDraft,
+    recoverableDrafts,
     status,
     runtimeMessage,
     elapsedMs,
@@ -373,7 +398,7 @@ function App() {
     hasDownloaded,
   } = meetingController;
   const isRunning = status === "listening" || status === "connecting" || status === "requesting_permission" || status === "reconnecting";
-  const canResume = Boolean(meeting && !meeting.endedAt && !isRunning);
+  const canResume = Boolean(meeting && !meeting.endedAt && !isRunning && status !== "paused");
   const finalCaptionCount = captions.items.filter((item) => item.kind === "caption").length;
   const gapCount = captions.items.filter((item) => item.kind === "gap").length;
 
@@ -414,24 +439,37 @@ function App() {
         </div>
       )}
 
-      {!meeting && recoverableDraft && (
-        <section className="recovery-card" aria-labelledby="recovery-title">
-          <span className="recovery-icon" aria-hidden="true">↻</span>
-          <div>
-            <p className="eyebrow">发现本地草稿</p>
-            <h2 id="recovery-title">上次字幕尚未清除</h2>
-            <p>
-              {new Date(recoverableDraft.startedAt).toLocaleString("zh-CN")} · {recoverableDraft.items.length} 条记录
-            </p>
-            <div className="button-row">
-              <button className="primary-button" onClick={meetingController.recoverDraft}>恢复草稿</button>
-              <button className="secondary-button" onClick={meetingController.discardRecoverableDraft}>删除草稿</button>
+      {!meeting && recoverableDrafts.length > 0 && (
+        <section className="drafts-panel" aria-labelledby="drafts-title">
+          <div className="drafts-heading">
+            <div>
+              <p className="eyebrow">本机临时保存</p>
+              <h2 id="drafts-title">会议草稿（{recoverableDrafts.length}）</h2>
             </div>
+            <p>草稿不会阻止开始新会议；完成后请及时导出或删除。</p>
+          </div>
+          <div className="draft-list">
+            {recoverableDrafts.map((draft) => {
+              const captionCount = draft.items.filter((item) => item.kind === "caption").length;
+              return (
+                <article className="recovery-card" key={draft.id}>
+                  <span className="recovery-icon" aria-hidden="true">↻</span>
+                  <div>
+                    <h3>{new Date(draft.startedAt).toLocaleString("zh-CN")}</h3>
+                    <p>{draft.endedAt ? "已结束" : "未结束"} · {captionCount} 条字幕</p>
+                    <div className="button-row">
+                      <button className="primary-button" onClick={() => meetingController.recoverDraft(draft.id)}>打开草稿</button>
+                      <button className="secondary-button" onClick={() => discardSavedDraft(draft.id)}>删除</button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
       )}
 
-      {!meeting && !recoverableDraft && (
+      {!meeting && (
         <section className="start-panel">
           <div className="language-route" aria-label="翻译方向">
             <span><b>한</b> 韩语现场</span>
@@ -467,7 +505,7 @@ function App() {
       )}
 
       {meeting && (
-        <section className="meeting-console">
+        <section className={`meeting-console ${meeting.endedAt ? "is-ended" : ""}`}>
           <div className={`status-strip status-${status}`} role="status">
             <span className="status-dot" />
             <div>
@@ -525,6 +563,16 @@ function App() {
 
           <footer className="meeting-actions">
             {isRunning && (
+              <button className="pause-button" onClick={meetingController.pauseMeeting}>
+                <span aria-hidden="true">Ⅱ</span> 暂停翻译
+              </button>
+            )}
+            {status === "paused" && !meeting.endedAt && (
+              <button className="primary-button" onClick={meetingController.resumePausedMeeting}>
+                继续翻译
+              </button>
+            )}
+            {!meeting.endedAt && (
               <button className="stop-button" onClick={meetingController.stopMeeting}>
                 <span aria-hidden="true" /> 结束会议
               </button>
@@ -539,6 +587,9 @@ function App() {
                 <button className="primary-button" onClick={meetingController.exportDraft}>导出双语 Markdown</button>
                 <button className="secondary-button" disabled={!hasDownloaded} onClick={confirmClear}>
                   确认并清除草稿
+                </button>
+                <button className="secondary-button" onClick={startAnotherMeeting}>
+                  保留草稿，开始新会议
                 </button>
               </>
             )}

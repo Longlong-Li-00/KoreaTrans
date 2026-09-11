@@ -11,6 +11,11 @@ function renderItem(item: TimelineItem) {
     return `> ⚠️ 未翻译区间 ${formatElapsed(item.startMs)}–${end}：${safeText(item.reason)}`;
   }
 
+  if (item.kind === "pause") {
+    const end = item.endMs === null ? "尚未继续" : formatElapsed(item.endMs);
+    return `> ⏸️ 主动暂停 ${formatElapsed(item.startMs)}–${end}：暂停期间未使用麦克风或翻译额度`;
+  }
+
   return [
     `### ${formatElapsed(item.startMs)}–${formatElapsed(item.endMs)}`,
     "",
@@ -57,4 +62,3 @@ export function downloadMeetingMarkdown(draft: MeetingDraft) {
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
-

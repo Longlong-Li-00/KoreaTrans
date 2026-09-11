@@ -2,7 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { ApiError, recordUsage } from "../lib/api";
 import { captionReducer, initialCaptionState } from "../lib/captionReducer";
 import { downloadMeetingMarkdown } from "../lib/exportMarkdown";
-import { clearMeetingDraft, loadMeetingDraft, saveMeetingDraft } from "../lib/meetingStore";
+import { clearMeetingDraft, listMeetingDrafts, saveMeetingDraft } from "../lib/meetingStore";
 import { AzureSpeechTranslator, type TranslationPayload } from "../lib/speechTranslator";
 import { itemEndMs } from "../lib/time";
 import type { CaptionSegment, MeetingDraft, SessionStatus } from "../types";
@@ -30,7 +30,7 @@ function isPermissionError(error: unknown) {
 export function useMeetingController(onAuthenticationExpired: () => void) {
   const [captions, dispatch] = useReducer(captionReducer, initialCaptionState);
   const [meeting, setMeeting] = useState<MeetingIdentity | null>(null);
-  const [recoverableDraft, setRecoverableDraft] = useState<MeetingDraft | null>(null);
+  const [recoverableDrafts, setRecoverableDrafts] = useState<MeetingDraft[]>([]);
   const [status, setStatus] = useState<SessionStatus>("idle");
   const [runtimeMessage, setRuntimeMessage] = useState("准备开始");
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -46,6 +46,7 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const gapIdRef = useRef<string | null>(null);
+  const pauseIdRef = useRef<string | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const connectRef = useRef<(isReconnect: boolean) => Promise<void>>(async () => undefined);
 
@@ -60,6 +61,30 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
   const currentElapsed = useCallback(() => {
     const started = meetingStartedMsRef.current;
     return started === null ? 0 : Math.max(0, Date.now() - started);
+  }, []);
+
+  const buildCurrentDraft = useCallback((): MeetingDraft | null => {
+    const current = meetingRef.current;
+    if (!current) return null;
+    return {
+      schemaVersion: 1,
+      id: current.id,
+      startedAt: current.startedAt,
+      endedAt: current.endedAt,
+      updatedAt: new Date().toISOString(),
+      sourceLanguage: "ko-KR",
+      targetLanguage: "zh-Hans",
+      provider: "azure-speech-translation",
+      appVersion: __APP_VERSION__,
+      items: itemsRef.current,
+    };
+  }, []);
+
+  const rememberRecoverableDraft = useCallback((draft: MeetingDraft) => {
+    setRecoverableDrafts((current) =>
+      [draft, ...current.filter((item) => item.id !== draft.id)]
+        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)),
+    );
   }, []);
 
   const requestWakeLock = useCallback(async () => {
@@ -106,6 +131,16 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
       if (!id) return;
       dispatch({ type: "close_gap", id, endMs: Math.round(endOverride ?? currentElapsed()) });
       gapIdRef.current = null;
+    },
+    [currentElapsed],
+  );
+
+  const closePause = useCallback(
+    (endOverride?: number) => {
+      const id = pauseIdRef.current;
+      if (!id) return;
+      dispatch({ type: "close_pause", id, endMs: Math.round(endOverride ?? currentElapsed()) });
+      pauseIdRef.current = null;
     },
     [currentElapsed],
   );
@@ -253,32 +288,22 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
   }, [connect]);
 
   useEffect(() => {
-    loadMeetingDraft()
-      .then((draft) => setRecoverableDraft(draft))
+    listMeetingDrafts()
+      .then((drafts) => setRecoverableDrafts(drafts))
       .catch(() => setDraftError("无法读取本地恢复草稿；当前会话仍可使用。"));
   }, []);
 
   useEffect(() => {
     if (!meeting) return;
     const timeout = window.setTimeout(() => {
-      const draft: MeetingDraft = {
-        schemaVersion: 1,
-        id: meeting.id,
-        startedAt: meeting.startedAt,
-        endedAt: meeting.endedAt,
-        updatedAt: new Date().toISOString(),
-        sourceLanguage: "ko-KR",
-        targetLanguage: "zh-Hans",
-        provider: "azure-speech-translation",
-        appVersion: __APP_VERSION__,
-        items: captions.items,
-      };
+      const draft = buildCurrentDraft();
+      if (!draft) return;
       saveMeetingDraft(draft).catch(() =>
         setDraftError("本地自动保存失败；请尽快结束并导出当前字幕。"),
       );
     }, 150);
     return () => window.clearTimeout(timeout);
-  }, [captions.items, meeting]);
+  }, [buildCurrentDraft, captions.items, meeting]);
 
   useEffect(() => {
     if (!meeting) return;
@@ -360,21 +385,67 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
     [clearReconnectTimer, releaseWakeLock, stopTranslator],
   );
 
-  const beginMeeting = useCallback(() => {
+  const beginMeeting = useCallback(async () => {
+    const previousDraft = buildCurrentDraft();
+    if (previousDraft) {
+      try {
+        await saveMeetingDraft(previousDraft);
+        rememberRecoverableDraft(previousDraft);
+      } catch {
+        setDraftError("无法把当前会议保存为草稿，因此尚未开始新会议。请重试或先导出。");
+        return;
+      }
+    }
     const now = new Date();
     const identity = { id: crypto.randomUUID(), startedAt: now.toISOString(), endedAt: null };
     dispatch({ type: "clear" });
+    itemsRef.current = [];
     meetingRef.current = identity;
     setMeeting(identity);
     meetingStartedMsRef.current = now.getTime();
     activeRef.current = true;
     reconnectAttemptRef.current = 0;
     gapIdRef.current = null;
+    pauseIdRef.current = null;
     setHasDownloaded(false);
     setElapsedMs(0);
     setDraftError(null);
     void connectRef.current(false);
-  }, []);
+  }, [buildCurrentDraft, rememberRecoverableDraft]);
+
+  const pauseMeeting = useCallback(async () => {
+    const current = meetingRef.current;
+    if (!current || current.endedAt || status === "paused") return;
+    activeRef.current = false;
+    connectGenerationRef.current += 1;
+    clearReconnectTimer();
+    closeGap();
+    const id = `pause-${crypto.randomUUID()}`;
+    pauseIdRef.current = id;
+    dispatch({
+      type: "open_pause",
+      pause: {
+        id,
+        kind: "pause",
+        startMs: Math.round(currentElapsed()),
+        endMs: null,
+        reason: "用户主动暂停",
+      },
+    });
+    setStatus("paused");
+    setRuntimeMessage("翻译已暂停；麦克风和用量计时均已停止。继续后仍属于同一场会议。");
+    await stopTranslator();
+    await releaseWakeLock();
+  }, [clearReconnectTimer, closeGap, currentElapsed, releaseWakeLock, status, stopTranslator]);
+
+  const resumePausedMeeting = useCallback(() => {
+    const current = meetingRef.current;
+    if (!current || current.endedAt || status !== "paused") return;
+    closePause();
+    activeRef.current = true;
+    reconnectAttemptRef.current = 0;
+    void connectRef.current(true);
+  }, [closePause, status]);
 
   const stopMeeting = useCallback(async () => {
     if (!meetingRef.current) return;
@@ -382,6 +453,7 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
     connectGenerationRef.current += 1;
     clearReconnectTimer();
     closeGap();
+    closePause();
     const endedAt = new Date().toISOString();
     if (meetingRef.current) meetingRef.current = { ...meetingRef.current, endedAt };
     setMeeting((current) => (current ? { ...current, endedAt } : current));
@@ -389,10 +461,10 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
     setRuntimeMessage("会议已停止。请先导出，再确认清除本地草稿。");
     await stopTranslator();
     await releaseWakeLock();
-  }, [clearReconnectTimer, closeGap, releaseWakeLock, stopTranslator]);
+  }, [clearReconnectTimer, closeGap, closePause, releaseWakeLock, stopTranslator]);
 
-  const recoverDraft = useCallback(() => {
-    const draft = recoverableDraft;
+  const recoverDraft = useCallback((id: string) => {
+    const draft = recoverableDrafts.find((item) => item.id === id);
     if (!draft) return;
     dispatch({ type: "hydrate", items: draft.items });
     const recovered = { id: draft.id, startedAt: draft.startedAt, endedAt: draft.endedAt };
@@ -400,17 +472,25 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
     setMeeting(recovered);
     meetingStartedMsRef.current = Date.parse(draft.startedAt);
     const openGapItem = [...draft.items].reverse().find((item) => item.kind === "gap" && item.endMs === null);
+    const openPauseItem = [...draft.items].reverse().find((item) => item.kind === "pause" && item.endMs === null);
     gapIdRef.current = openGapItem?.id ?? null;
-    setStatus("stopped");
+    pauseIdRef.current = openPauseItem?.id ?? null;
+    setStatus(openPauseItem && !draft.endedAt ? "paused" : "stopped");
     setElapsedMs(
       draft.endedAt
         ? Math.max(0, Date.parse(draft.endedAt) - Date.parse(draft.startedAt))
         : Math.max(0, Date.now() - Date.parse(draft.startedAt)),
     );
-    setRuntimeMessage(draft.endedAt ? "已恢复结束的本地草稿。" : "已恢复中断的本场草稿，可继续收听。" );
-    setRecoverableDraft(null);
+    setRuntimeMessage(
+      draft.endedAt
+        ? "已恢复结束的本地草稿。"
+        : openPauseItem
+          ? "已恢复暂停中的会议；继续后仍写入本场记录。"
+          : "已恢复中断的本场草稿，可继续收听。",
+    );
+    setRecoverableDrafts((current) => current.filter((item) => item.id !== draft.id));
     setHasDownloaded(false);
-  }, [recoverableDraft]);
+  }, [recoverableDrafts]);
 
   const resumeMeeting = useCallback(() => {
     const current = meetingRef.current;
@@ -430,26 +510,9 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
     void connectRef.current(true);
   }, [clearReconnectTimer]);
 
-  const discardRecoverableDraft = useCallback(async () => {
-    await clearMeetingDraft();
-    setRecoverableDraft(null);
-  }, []);
-
-  const buildCurrentDraft = useCallback((): MeetingDraft | null => {
-    const current = meetingRef.current;
-    if (!current) return null;
-    return {
-      schemaVersion: 1,
-      id: current.id,
-      startedAt: current.startedAt,
-      endedAt: current.endedAt,
-      updatedAt: new Date().toISOString(),
-      sourceLanguage: "ko-KR",
-      targetLanguage: "zh-Hans",
-      provider: "azure-speech-translation",
-      appVersion: __APP_VERSION__,
-      items: itemsRef.current,
-    };
+  const discardRecoverableDraft = useCallback(async (id: string) => {
+    await clearMeetingDraft(id);
+    setRecoverableDrafts((current) => current.filter((item) => item.id !== id));
   }, []);
 
   const exportDraft = useCallback(() => {
@@ -460,31 +523,36 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
   }, [buildCurrentDraft]);
 
   const clearCurrentDraft = useCallback(async () => {
+    const currentId = meetingRef.current?.id;
     activeRef.current = false;
     await stopTranslator();
-    await clearMeetingDraft();
+    if (currentId) await clearMeetingDraft(currentId);
     dispatch({ type: "clear" });
     meetingRef.current = null;
     setMeeting(null);
     meetingStartedMsRef.current = null;
     gapIdRef.current = null;
+    pauseIdRef.current = null;
     setStatus("idle");
     setRuntimeMessage("准备开始");
     setElapsedMs(0);
     setHasDownloaded(false);
     setDraftError(null);
+    setRecoverableDrafts((current) => current.filter((item) => item.id !== currentId));
   }, [stopTranslator]);
 
   return {
     captions,
     meeting,
-    recoverableDraft,
+    recoverableDrafts,
     status,
     runtimeMessage,
     elapsedMs,
     draftError,
     hasDownloaded,
     beginMeeting,
+    pauseMeeting,
+    resumePausedMeeting,
     stopMeeting,
     recoverDraft,
     resumeMeeting,

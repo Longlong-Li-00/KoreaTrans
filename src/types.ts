@@ -3,6 +3,7 @@ export type SessionStatus =
   | "requesting_permission"
   | "connecting"
   | "listening"
+  | "paused"
   | "reconnecting"
   | "stopped"
   | "error";
@@ -25,7 +26,15 @@ export interface GapMarker {
   reason: string;
 }
 
-export type TimelineItem = CaptionSegment | GapMarker;
+export interface PauseMarker {
+  id: string;
+  kind: "pause";
+  startMs: number;
+  endMs: number | null;
+  reason: "用户主动暂停";
+}
+
+export type TimelineItem = CaptionSegment | GapMarker | PauseMarker;
 
 export interface MeetingDraft {
   schemaVersion: 1;

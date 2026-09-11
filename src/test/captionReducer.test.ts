@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { captionReducer, initialCaptionState } from "../lib/captionReducer";
-import type { CaptionSegment, GapMarker } from "../types";
+import type { CaptionSegment, GapMarker, PauseMarker } from "../types";
 
 function caption(id: string, status: "interim" | "final" = "final"): CaptionSegment {
   return {
@@ -63,5 +63,19 @@ describe("captionReducer", () => {
     const closed = captionReducer(duplicate, { type: "close_gap", id: "gap-1", endMs: 3_000 });
     expect(duplicate.items).toHaveLength(1);
     expect(closed.items[0]).toMatchObject({ startMs: 4_000, endMs: 4_000 });
+  });
+
+  it("主动暂停作为独立区间保存，并在继续时关闭", () => {
+    const pause: PauseMarker = {
+      id: "pause-1",
+      kind: "pause",
+      startMs: 7_000,
+      endMs: null,
+      reason: "用户主动暂停",
+    };
+    const opened = captionReducer(initialCaptionState, { type: "open_pause", pause });
+    const closed = captionReducer(opened, { type: "close_pause", id: pause.id, endMs: 12_000 });
+    expect(closed.items).toEqual([{ ...pause, endMs: 12_000 }]);
+    expect(closed.provisional).toBeNull();
   });
 });
