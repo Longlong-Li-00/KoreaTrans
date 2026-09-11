@@ -12,10 +12,12 @@ describe("App authentication", () => {
     ));
   });
 
-  it("未登录时显示个人口令入口且空口令不可提交", async () => {
+  it("未登录时显示测试账号入口、水印且空口令不可提交", async () => {
     render(<App />);
+    expect(await screen.findByLabelText("测试账号")).toHaveValue("longlong");
     expect(await screen.findByLabelText("个人访问口令")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "进入翻译台" })).toBeDisabled();
     expect(screen.getByText(/音频不在本应用中录制或保存/)).toBeInTheDocument();
+    expect(screen.getByText("longlong · beta")).toBeInTheDocument();
   });
 });

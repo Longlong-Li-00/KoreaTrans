@@ -31,3 +31,30 @@ app.http("speechToken", {
   handler: handlers.speechToken,
 });
 
+app.http("usageSummary", {
+  methods: ["GET"],
+  authLevel: "anonymous",
+  route: "usage/summary",
+  handler: handlers.usageSummary,
+});
+
+app.http("usageRecord", {
+  methods: ["POST"],
+  authLevel: "anonymous",
+  route: "usage/record",
+  handler: handlers.usageRecord,
+});
+
+app.http("feedbackSubmit", {
+  methods: ["POST"],
+  authLevel: "anonymous",
+  route: "feedback",
+  handler: handlers.feedbackSubmit,
+});
+
+app.http("feedbackList", {
+  methods: ["GET"],
+  authLevel: "anonymous",
+  route: "feedback",
+  handler: handlers.feedbackList,
+});

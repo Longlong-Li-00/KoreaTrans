@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { checkSession, login, logout } from "./lib/api";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  checkSession,
+  fetchFeedback,
+  fetchUsageSummary,
+  login,
+  logout,
+  submitFeedback,
+} from "./lib/api";
 import { formatElapsed } from "./lib/time";
 import { useMeetingController } from "./hooks/useMeetingController";
-import type { SessionStatus, TimelineItem } from "./types";
+import type { AuthUser, FeedbackPayload, SessionStatus, TimelineItem, UsageSummary } from "./types";
 import "./styles.css";
 
 type AuthenticationState = "checking" | "signed_out" | "signed_in";
@@ -24,8 +31,9 @@ function LoginScreen({
 }: {
   checking: boolean;
   initialError: string | null;
-  onSignedIn: () => void;
+  onSignedIn: (user: AuthUser) => void;
 }) {
+  const [username, setUsername] = useState(() => localStorage.getItem("klt-last-user") || "longlong");
   const [password, setPassword] = useState("");
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -36,9 +44,11 @@ function LoginScreen({
     setSubmitting(true);
     setSubmissionError(null);
     try {
-      await login(password);
+      const session = await login(username, password);
+      if (!session.user) throw new Error("登录响应缺少用户信息。");
+      localStorage.setItem("klt-last-user", session.user.id);
       setPassword("");
-      onSignedIn();
+      onSignedIn(session.user);
     } catch (cause) {
       setSubmissionError(cause instanceof Error ? cause.message : "登录失败，请稍后重试。");
     } finally {
@@ -61,6 +71,19 @@ function LoginScreen({
           </div>
         ) : (
           <form onSubmit={submit}>
+            <label htmlFor="username">测试账号</label>
+            <input
+              id="username"
+              type="text"
+              autoComplete="username"
+              value={username}
+              minLength={2}
+              maxLength={32}
+              pattern="[A-Za-z0-9._-]+"
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="例如 tester01"
+              required
+            />
             <label htmlFor="password">个人访问口令</label>
             <input
               id="password"
@@ -74,12 +97,13 @@ function LoginScreen({
               required
             />
             {error && <p className="form-error" role="alert">{error}</p>}
-            <button className="primary-button wide" disabled={submitting || password.length < 16}>
+            <button className="primary-button wide" disabled={submitting || username.length < 2 || password.length < 16}>
               {submitting ? "正在登录…" : "进入翻译台"}
             </button>
           </form>
         )}
-        <p className="privacy-footnote">口令只通过 HTTPS 发往你的 Azure Function；Azure Speech 密钥不会进入浏览器。</p>
+        <p className="privacy-footnote">账号和口令只通过 HTTPS 发往 Azure Function；Azure Speech 密钥不会进入浏览器。</p>
+        <p className="maker-watermark">longlong · beta</p>
       </section>
     </main>
   );
@@ -107,26 +131,181 @@ function TimelineEntry({ item }: { item: TimelineItem }) {
   );
 }
 
+function formatQuota(seconds: number | null) {
+  if (seconds === null) return "暂不可用";
+  const roundedMinutes = Math.max(0, Math.ceil(seconds / 60));
+  const hours = Math.floor(roundedMinutes / 60);
+  const minutes = roundedMinutes % 60;
+  if (hours === 0) return `${minutes} 分钟`;
+  return minutes === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes} 分钟`;
+}
+
+function FeedbackPanel({
+  diagnostics,
+  onClose,
+}: {
+  diagnostics: Omit<FeedbackPayload, "rating" | "category" | "comment">;
+  onClose: () => void;
+}) {
+  const [rating, setRating] = useState(0);
+  const [category, setCategory] = useState("caption-stability");
+  const [comment, setComment] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setMessage(null);
+    try {
+      await submitFeedback({ ...diagnostics, rating, category, comment });
+      setMessage("反馈已保存，谢谢你的测试。");
+      setComment("");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "反馈提交失败，请稍后重试。");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
+        <div className="dialog-heading">
+          <div>
+            <p className="eyebrow">BETA FEEDBACK</p>
+            <h2 id="feedback-title">告诉我实际使用感受</h2>
+          </div>
+          <button className="quiet-button" type="button" onClick={onClose} aria-label="关闭反馈窗口">关闭</button>
+        </div>
+        <form onSubmit={submit}>
+          <fieldset className="rating-field">
+            <legend>整体可用性评分</legend>
+            <div className="rating-options">
+              {[1, 2, 3, 4, 5].map((value) => (
+                <label key={value} className={rating === value ? "selected" : ""}>
+                  <input
+                    type="radio"
+                    name="rating"
+                    value={value}
+                    checked={rating === value}
+                    onChange={() => setRating(value)}
+                  />
+                  {value}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <label htmlFor="feedback-category">主要反馈类别</label>
+          <select id="feedback-category" value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option value="caption-stability">字幕稳定性</option>
+            <option value="translation">翻译理解度</option>
+            <option value="latency">显示延迟</option>
+            <option value="connection">连接或麦克风</option>
+            <option value="interface">界面与操作</option>
+            <option value="other">其他</option>
+          </select>
+          <label htmlFor="feedback-comment">具体意见</label>
+          <textarea
+            id="feedback-comment"
+            value={comment}
+            minLength={2}
+            maxLength={1_000}
+            rows={5}
+            onChange={(event) => setComment(event.target.value)}
+            placeholder="例如：临时字幕仍跳动较多；断网恢复正常；某些科研术语难以理解……"
+            required
+          />
+          <p className="feedback-privacy">
+            自动附带版本、状态、时长、最终字幕条数和断档数；不会上传音频或字幕内容。
+          </p>
+          {message && <p className="feedback-message" role="status">{message}</p>}
+          <button className="primary-button wide" disabled={submitting || rating === 0 || comment.trim().length < 2}>
+            {submitting ? "正在提交…" : "提交反馈"}
+          </button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function safeCsvCell(value: unknown) {
+  let text = String(value ?? "");
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+async function downloadFeedbackExport() {
+  const entries = await fetchFeedback();
+  const columns = [
+    "createdAt", "userId", "displayName", "rating", "category", "comment", "status",
+    "meetingDurationSeconds", "finalCaptionCount", "gapCount", "appVersion",
+  ] as const;
+  const rows = [
+    columns.map(safeCsvCell).join(","),
+    ...entries.map((entry) => columns.map((column) => safeCsvCell(entry[column])).join(",")),
+  ];
+  const blob = new Blob(["\uFEFF", rows.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `koreatrans-feedback-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function App() {
   const [authState, setAuthState] = useState<AuthenticationState>("checking");
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [followLatest, setFollowLatest] = useState(true);
+  const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
+  const [usageUnavailable, setUsageUnavailable] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [ownerMessage, setOwnerMessage] = useState<string | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
 
   const meetingController = useMeetingController(() => {
     setAuthState("signed_out");
+    setCurrentUser(null);
     setAuthError("登录已过期，请重新登录后恢复本场草稿。");
   });
 
+  const refreshUsage = useCallback(() => {
+    if (authState !== "signed_in") return;
+    fetchUsageSummary()
+      .then((summary) => {
+        setUsageSummary(summary);
+        setUsageUnavailable(!summary.available);
+      })
+      .catch(() => setUsageUnavailable(true));
+  }, [authState]);
+
   useEffect(() => {
     checkSession()
-      .then((authenticated) => setAuthState(authenticated ? "signed_in" : "signed_out"))
+      .then((session) => {
+        setCurrentUser(session.user);
+        setAuthState(session.authenticated && session.user ? "signed_in" : "signed_out");
+      })
       .catch(() => {
         setAuthState("signed_out");
         setAuthError("无法连接登录服务。请确认 Azure API 已部署并刷新页面。");
       });
   }, []);
+
+  useEffect(() => {
+    if (authState !== "signed_in") return;
+    refreshUsage();
+    const timer = window.setInterval(refreshUsage, 30_000);
+    window.addEventListener("klt-usage-updated", refreshUsage);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("klt-usage-updated", refreshUsage);
+    };
+  }, [authState, refreshUsage]);
 
   useEffect(() => {
     if (!followLatest) return;
@@ -147,7 +326,18 @@ function App() {
     }
     await logout().catch(() => undefined);
     setAuthState("signed_out");
+    setCurrentUser(null);
+    setUsageSummary(null);
     setConsentConfirmed(false);
+  }
+
+  async function exportFeedback() {
+    setOwnerMessage(null);
+    try {
+      await downloadFeedbackExport();
+    } catch (cause) {
+      setOwnerMessage(cause instanceof Error ? cause.message : "反馈导出失败。");
+    }
   }
 
   async function confirmClear() {
@@ -163,8 +353,9 @@ function App() {
       <LoginScreen
         checking={authState === "checking"}
         initialError={authError}
-        onSignedIn={() => {
+        onSignedIn={(user) => {
           setAuthError(null);
+          setCurrentUser(user);
           setAuthState("signed_in");
         }}
       />
@@ -183,6 +374,8 @@ function App() {
   } = meetingController;
   const isRunning = status === "listening" || status === "connecting" || status === "requesting_permission" || status === "reconnecting";
   const canResume = Boolean(meeting && !meeting.endedAt && !isRunning);
+  const finalCaptionCount = captions.items.filter((item) => item.kind === "caption").length;
+  const gapCount = captions.items.filter((item) => item.kind === "gap").length;
 
   return (
     <main className="app-shell">
@@ -190,9 +383,36 @@ function App() {
         <div>
           <p className="eyebrow">KO → 简体中文</p>
           <h1>实时翻译台</h1>
+          <p className="maker-watermark">longlong · beta</p>
         </div>
-        <button className="quiet-button" onClick={signOut}>退出</button>
+        <div className="topbar-actions">
+          <span className="user-chip" title={currentUser?.id}>{currentUser?.displayName}</span>
+          <button className="quiet-button" onClick={() => setFeedbackOpen(true)}>反馈</button>
+          <button className="quiet-button" onClick={signOut}>退出</button>
+        </div>
       </header>
+
+      <section className="quota-card" aria-label="本月翻译额度估算">
+        <div>
+          <span>F0 本月预计剩余</span>
+          <strong>
+            {usageUnavailable
+              ? "暂不可用"
+              : usageSummary
+                ? `≈ ${formatQuota(usageSummary.estimatedRemainingSeconds)}`
+                : "正在读取…"}
+          </strong>
+        </div>
+        <button className="quota-refresh" type="button" onClick={refreshUsage}>刷新</button>
+        <p>仅统计此功能上线后的本应用有效收听时间；Azure Portal 计量是最终依据。</p>
+      </section>
+
+      {currentUser?.role === "owner" && (
+        <div className="owner-tools">
+          <button className="quiet-button" type="button" onClick={exportFeedback}>导出测试反馈</button>
+          {ownerMessage && <span role="alert">{ownerMessage}</span>}
+        </div>
+      )}
 
       {!meeting && recoverableDraft && (
         <section className="recovery-card" aria-labelledby="recovery-title">
@@ -324,6 +544,19 @@ function App() {
             )}
           </footer>
         </section>
+      )}
+
+      {feedbackOpen && (
+        <FeedbackPanel
+          diagnostics={{
+            status,
+            meetingDurationSeconds: Math.round(elapsedMs / 1_000),
+            finalCaptionCount,
+            gapCount,
+            appVersion: __APP_VERSION__,
+          }}
+          onClose={() => setFeedbackOpen(false)}
+        />
       )}
     </main>
   );

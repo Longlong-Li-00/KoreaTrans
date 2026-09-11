@@ -20,6 +20,10 @@ const routes = new Map([
   ["GET /api/auth/session", handlers.session],
   ["POST /api/auth/logout", handlers.logout],
   ["POST /api/speech/token", handlers.speechToken],
+  ["GET /api/usage/summary", handlers.usageSummary],
+  ["POST /api/usage/record", handlers.usageRecord],
+  ["POST /api/feedback", handlers.feedbackSubmit],
+  ["GET /api/feedback", handlers.feedbackList],
 ]);
 
 function parseCookies(value = "") {

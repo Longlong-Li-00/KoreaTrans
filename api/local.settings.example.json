@@ -5,9 +5,14 @@
     "FUNCTIONS_WORKER_RUNTIME": "node",
     "AZURE_SPEECH_KEY": "replace-with-your-east-asia-f0-key",
     "AZURE_SPEECH_REGION": "eastasia",
+    "AZURE_SPEECH_MONTHLY_LIMIT_SECONDS": "18000",
     "APP_PASSWORD_SCRYPT_HASH": "run-npm-run-auth-hash-at-project-root",
+    "APP_TEST_USERS_JSON": "{}",
     "SESSION_SIGNING_SECRET": "replace-with-at-least-32-random-characters",
     "APP_ALLOWED_ORIGINS": "http://localhost:4280,http://localhost:5173",
-    "APP_COOKIE_SECURE": "false"
+    "APP_COOKIE_SECURE": "false",
+    "AZURE_STORAGE_CONNECTION_STRING": "replace-with-a-dedicated-storage-connection-string",
+    "AZURE_USAGE_TABLE_NAME": "KoreaTransUsage",
+    "AZURE_FEEDBACK_TABLE_NAME": "KoreaTransFeedback"
   }
 }

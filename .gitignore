@@ -11,3 +11,4 @@ coverage/
 !.env.example
 api/local.settings.json
 api/node_modules/
+private/

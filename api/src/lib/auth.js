@@ -10,6 +10,8 @@ const scrypt = promisify(scryptCallback);
 const COOKIE_NAME = "klt_session";
 const SESSION_SECONDS = 12 * 60 * 60;
 const HASH_BYTES = 64;
+const USER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{1,31}$/;
+const LEGACY_USER = Object.freeze({ id: "longlong", displayName: "Longlong", role: "owner" });
 
 function encode(value) {
   return Buffer.from(value, "utf8").toString("base64url");
@@ -62,13 +64,52 @@ export async function hashPasswordForTest(password, salt = randomBytes(16)) {
   return `scrypt$${N}$${r}$${p}$${salt.toString("base64url")}$${derived.toString("base64url")}`;
 }
 
-export function createSessionCookie(secret, nowMs = Date.now(), secure = true) {
+export function normalizeUserId(value) {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim().toLowerCase();
+  return USER_ID_PATTERN.test(normalized) ? normalized : "";
+}
+
+export function configuredUsers(env) {
+  const users = new Map();
+  if (env.APP_PASSWORD_SCRYPT_HASH) {
+    users.set(LEGACY_USER.id, { ...LEGACY_USER, passwordHash: env.APP_PASSWORD_SCRYPT_HASH });
+  }
+
+  if (!env.APP_TEST_USERS_JSON) return users;
+  try {
+    const parsed = JSON.parse(env.APP_TEST_USERS_JSON);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return users;
+    for (const [rawId, entry] of Object.entries(parsed).slice(0, 25)) {
+      const id = normalizeUserId(rawId);
+      if (!id || !entry || typeof entry !== "object" || entry.enabled === false) continue;
+      const displayName = typeof entry.displayName === "string" ? entry.displayName.trim() : id;
+      const role = entry.role === "owner" ? "owner" : "tester";
+      if (
+        displayName.length < 1 ||
+        displayName.length > 40 ||
+        typeof entry.passwordHash !== "string"
+      ) continue;
+      users.set(id, { id, displayName, role, passwordHash: entry.passwordHash });
+    }
+  } catch {
+    // A malformed optional registry must not expose configuration details.
+  }
+  return users;
+}
+
+export function createSessionCookie(secret, user, nowMs = Date.now(), secure = true) {
   if (typeof secret !== "string" || secret.length < 32) {
     throw new Error("SESSION_SIGNING_SECRET must contain at least 32 characters");
   }
+  const id = normalizeUserId(user?.id);
+  if (!id) throw new Error("A valid user id is required");
   const payload = encode(
     JSON.stringify({
-      v: 1,
+      v: 2,
+      sub: id,
+      name: String(user?.displayName || id).slice(0, 40),
+      role: user?.role === "owner" ? "owner" : "tester",
       iat: Math.floor(nowMs / 1000),
       exp: Math.floor(nowMs / 1000) + SESSION_SECONDS,
       nonce: randomBytes(12).toString("base64url"),
@@ -97,22 +138,32 @@ export function parseCookieHeader(header) {
 }
 
 export function verifySessionCookie(cookieHeader, secret, nowMs = Date.now()) {
-  if (typeof secret !== "string" || secret.length < 32) return false;
+  if (typeof secret !== "string" || secret.length < 32) return null;
   const value = parseCookieHeader(cookieHeader)[COOKIE_NAME];
-  if (!value) return false;
+  if (!value) return null;
 
   const separator = value.lastIndexOf(".");
-  if (separator < 1) return false;
+  if (separator < 1) return null;
   const payload = value.slice(0, separator);
   const suppliedSignature = value.slice(separator + 1);
-  if (!safeCompare(suppliedSignature, signatureFor(payload, secret))) return false;
+  if (!safeCompare(suppliedSignature, signatureFor(payload, secret))) return null;
 
   try {
     const parsed = JSON.parse(decode(payload));
     const nowSeconds = Math.floor(nowMs / 1000);
-    return parsed.v === 1 && Number.isInteger(parsed.exp) && parsed.exp > nowSeconds;
+    if (!Number.isInteger(parsed.exp) || parsed.exp <= nowSeconds) return null;
+    if (parsed.v === 1) return LEGACY_USER;
+    const id = normalizeUserId(parsed.sub);
+    if (parsed.v !== 2 || !id) return null;
+    return {
+      id,
+      displayName:
+        typeof parsed.name === "string" && parsed.name.trim()
+          ? parsed.name.trim().slice(0, 40)
+          : id,
+      role: parsed.role === "owner" ? "owner" : "tester",
+    };
   } catch {
-    return false;
+    return null;
   }
 }
-

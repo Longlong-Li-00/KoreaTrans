@@ -1,4 +1,10 @@
-import type { SpeechToken } from "../types";
+import type {
+  AuthSession,
+  FeedbackEntry,
+  FeedbackPayload,
+  SpeechToken,
+  UsageSummary,
+} from "../types";
 
 export class ApiError extends Error {
   code: string;
@@ -36,15 +42,16 @@ async function apiFetch(path: string, init?: RequestInit) {
 
 export async function checkSession() {
   const response = await apiFetch("/api/auth/session", { cache: "no-store" });
-  return ((await response.json()) as { authenticated: boolean }).authenticated;
+  return (await response.json()) as AuthSession;
 }
 
-export async function login(password: string) {
-  await apiFetch("/api/auth/login", {
+export async function login(username: string, password: string) {
+  const response = await apiFetch("/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ username, password }),
   });
+  return (await response.json()) as AuthSession;
 }
 
 export async function logout() {
@@ -56,3 +63,29 @@ export async function fetchSpeechToken(): Promise<SpeechToken> {
   return (await response.json()) as SpeechToken;
 }
 
+export async function fetchUsageSummary(): Promise<UsageSummary> {
+  const response = await apiFetch("/api/usage/summary", { cache: "no-store" });
+  return (await response.json()) as UsageSummary;
+}
+
+export async function recordUsage(meetingId: string, seconds: number) {
+  await apiFetch("/api/usage/record", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ meetingId, eventId: crypto.randomUUID(), seconds }),
+    keepalive: true,
+  });
+}
+
+export async function submitFeedback(payload: FeedbackPayload) {
+  await apiFetch("/api/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchFeedback(): Promise<FeedbackEntry[]> {
+  const response = await apiFetch("/api/feedback", { cache: "no-store" });
+  return ((await response.json()) as { items: FeedbackEntry[] }).items;
+}

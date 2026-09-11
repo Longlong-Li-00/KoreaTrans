@@ -1,7 +1,7 @@
 {
   "name": "korea-live-translate",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "engines": {
     "node": ">=22 <25"
@@ -17,7 +17,8 @@
     "test:api": "npm --prefix api test",
     "test": "npm run test:frontend && npm run test:api",
     "check": "npm run lint && npm run test && npm run build",
-    "auth:hash": "node scripts/generate-password-hash.mjs"
+    "auth:hash": "node scripts/generate-password-hash.mjs",
+    "auth:test-users": "node scripts/generate-test-users.mjs"
   },
   "dependencies": {
     "microsoft-cognitiveservices-speech-sdk": "1.51.0",

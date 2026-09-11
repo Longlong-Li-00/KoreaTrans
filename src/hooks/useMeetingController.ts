@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { ApiError } from "../lib/api";
+import { ApiError, recordUsage } from "../lib/api";
 import { captionReducer, initialCaptionState } from "../lib/captionReducer";
 import { downloadMeetingMarkdown } from "../lib/exportMarkdown";
 import { clearMeetingDraft, loadMeetingDraft, saveMeetingDraft } from "../lib/meetingStore";
@@ -293,6 +293,25 @@ export function useMeetingController(onAuthenticationExpired: () => void) {
     const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
   }, [currentElapsed, meeting]);
+
+  useEffect(() => {
+    if (status !== "listening" || !meeting || meeting.endedAt) return;
+    let lastReportedAt = Date.now();
+    const flush = () => {
+      const reportedAt = Date.now();
+      const seconds = Math.min(60, Math.max(0, (reportedAt - lastReportedAt) / 1_000));
+      lastReportedAt = reportedAt;
+      if (seconds < 0.5) return;
+      void recordUsage(meeting.id, seconds)
+        .then(() => window.dispatchEvent(new Event("klt-usage-updated")))
+        .catch(() => undefined);
+    };
+    const timer = window.setInterval(flush, 15_000);
+    return () => {
+      window.clearInterval(timer);
+      flush();
+    };
+  }, [meeting, status]);
 
   const pauseForExternalReason = useCallback(
     (reason: string) => {
